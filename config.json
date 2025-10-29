@@ -1,0 +1,61 @@
+{
+  "base_url": "https://www.seismic.com/customer-stories/",
+  "max_pages_to_scrape": 6,
+  "pagination_type": "click_button_by_page_number",
+  "next_page_button_selector": "a[data-page='{page_num}']",
+  "story_card_list_selector": "ul[class*='grid-cols-1']",
+  "story_card_link_selector": "li a",
+  "wait_for_element_selector": "h1, div.rte[class*='text-h3'], h2, div[class*='lg:col-span-5']",
+  "details_page_load_timeout": 180,
+  "main_wait_timeout": 180,
+  "max_retries": 3,
+  "output_filename": "seismic_customer_stories_STREAMLIT.xlsx",
+  "data_selectors": {
+    "company_name": {"source": "url", "regex": "/customer-stories/([^/]+)/?"},
+    "title": [
+      {"selector": "h1", "method": "text", "confidence": 2},
+      {"selector": "div.rte[class*='text-h3'] p", "method": "text", "confidence": 2},
+      {"selector": "div.rte[class*='text-h3']", "method": "text", "confidence": 2},
+      {"selector": "h2", "method": "text", "limit": 1, "min_length": 5, "confidence": 1},
+      {"selector": "p[class*='text-h']", "method": "text", "limit": 1, "min_length": 5, "confidence": 1}
+    ],
+    "description": [
+       {"selector": "title_element", "method": "next_p_after_title_strict", "min_length": 50, "confidence": 1}
+    ],
+    "challenge": [
+      {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "Challenge", "confidence": 1},
+      {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "Challenge", "confidence": 1},
+      {"selector": "strong", "method": "parent_text_after_strong", "key_text": "Challenge", "confidence": 1},
+      {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "Challenge", "confidence": 1}
+    ],
+    "solution": [
+        {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "Solution", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "Solution", "confidence": 1},
+        {"selector": "strong", "method": "parent_text_after_strong", "key_text": "Solution", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "Solution", "confidence": 1}
+    ],
+    "headquarters": [
+        {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "HEADQUARTERS", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "HEADQUARTERS", "confidence": 1},
+        {"selector": "strong", "method": "parent_text_after_strong", "key_text": "HEADQUARTERS", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "HEADQUARTERS", "confidence": 1}
+    ],
+    "industry": [
+        {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "INDUSTRY", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "INDUSTRY", "confidence": 1},
+        {"selector": "strong", "method": "parent_text_after_strong", "key_text": "INDUSTRY", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "INDUSTRY", "confidence": 1}
+    ],
+    "integrations": [
+        {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "INTEGRATIONS", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "INTEGRATIONS", "confidence": 1},
+        {"selector": "strong", "method": "parent_text_after_strong", "key_text": "INTEGRATIONS", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "INTEGRATIONS", "confidence": 1}
+    ]
+  },
+  "confidence_thresholds": {
+      "high": 7,
+      "medium": 4
+  },
+  "output_columns": ["url", "company_name", "title", "description", "challenge", "solution", "headquarters", "industry", "integrations", "confidence_score", "needs_verification"]
+}
