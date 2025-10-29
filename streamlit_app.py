@@ -7,6 +7,7 @@ import re
 import json
 import os # To check for config file
 from io import BytesIO # To create download button for Excel
+import threading
 
 # Selenium imports
 from selenium import webdriver
@@ -16,36 +17,18 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException, ElementClickInterceptedException
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.options import Options as ChromeOptions # Renamed to avoid conflict
+from selenium.webdriver.chrome.options import Options as ChromeOptions
 
 # --- Configuration Loading ---
 CONFIG_FILE = 'config.json'
 SECTION_KEYWORDS = {"challenge", "solution", "headquarters", "industry", "integrations", "share", "results", "the", "about", "at", "group", "financial"}
 
-# --- Streamlit Logger ---
-# A class to redirect print statements to the Streamlit UI
-class StreamlitLog:
-    def __init__(self, log_area):
-        self.log_area = log_area
-        self.buffer = ""
-
-    def write(self, message):
-        self.buffer += message
-        # Update the UI in real-time
-        self.log_area.text_area("Log Output", self.buffer, height=300, key="log_output")
-
-    def flush(self): pass # Needed for compatibility
-
-    def clear(self):
-        self.buffer = ""
-        self.log_area.text_area("Log Output", self.buffer, height=300, key="log_output")
-
 # --- Scraper Helper Functions ---
+# (These are the same functions from the working script)
 def clean_text(text):
     if not text: return None
     text = text.replace("(Opens in a new tab)", "").strip().strip('“”"\'')
     return text.strip()
-
 def get_text(element): return element.get_text(strip=True) if element else None
 def get_first_p_before_heading_strict(element, soup):
     if not element: return None
@@ -94,39 +77,41 @@ EXTRACTION_METHODS = {
 }
 # --- End Scraper Helper Functions ---
 
+
 # --- Scraper Core Logic ---
-def get_story_links(driver, wait, config, log):
+def get_story_links(driver, wait, config, log_callback):
+    """ Step 1: Find story links, handle pagination. """
     base_url = config['base_url']; max_pages_or_clicks = config['max_pages_to_scrape']
     pagination_type = config['pagination_type']; next_page_selector_template = config['next_page_button_selector']
     list_selector = config['story_card_list_selector']; link_selector = config['story_card_link_selector']
-    log(f"Navigating to {base_url} to find links..."); driver.get(base_url); time.sleep(3)
+    log_callback(f"Navigating to {base_url} to find links..."); driver.get(base_url); time.sleep(3)
     links = set()
     first_link_full_selector = f"{list_selector} {link_selector}:first-of-type"
 
     try:
         cookie_wait = WebDriverWait(driver, 10)
         cookie_button = cookie_wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept all') or contains(@id, 'accept') or contains(@class, 'accept')] | //a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept all')]")))
-        log("  Found and clicked cookie accept button."); driver.execute_script("arguments[0].click();", cookie_button); time.sleep(2)
-    except (TimeoutException, NoSuchElementException): log("  No obvious cookie banner found or timed out. Continuing...")
+        log_callback("  Found and clicked cookie accept button."); driver.execute_script("arguments[0].click();", cookie_button); time.sleep(2)
+    except (TimeoutException, NoSuchElementException): log_callback("  No obvious cookie banner found or timed out. Continuing...")
 
     try:
          wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, list_selector)))
-         log(f"  Initial container ('{list_selector}') found."); wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, first_link_full_selector)))
-         log(f"  First link ('{first_link_full_selector}') visible."); time.sleep(1)
-    except TimeoutException: log(f"Error: Initial container/link not found/visible. Cannot proceed."); return []
+         log_callback(f"  Initial container ('{list_selector}') found."); wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, first_link_full_selector)))
+         log_callback(f"  First link ('{first_link_full_selector}') visible."); time.sleep(1)
+    except TimeoutException: log_callback(f"Error: Initial container/link not found/visible. Cannot proceed."); return []
 
     current_page = 1; pagination_active = True; last_first_href = ""
     while pagination_active and current_page <= max_pages_or_clicks:
-        log(f"--- Processing Page {current_page} ---"); found_on_page = 0
+        log_callback(f"--- Processing Page {current_page} ---"); found_on_page = 0
         current_first_href = None
         try:
             first_link_element = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, first_link_full_selector)))
             current_first_href = first_link_element.get_attribute('data-href') or first_link_element.get_attribute('href')
             time.sleep(2)
-            if current_page > 1 and current_first_href == last_first_href: log(f"    Warning: Content appears unchanged after pagination. Stopping."); break
+            if current_page > 1 and current_first_href == last_first_href: log_callback(f"    Warning: Content appears unchanged after pagination. Stopping."); break
             last_first_href = current_first_href
             link_elements = driver.find_elements(By.CSS_SELECTOR, f"{list_selector} {link_selector}")
-            log(f"  Found {len(link_elements)} potential link elements.");
+            log_callback(f"  Found {len(link_elements)} potential link elements.");
             for element in link_elements:
                 try:
                     href = element.get_attribute('data-href') or element.get_attribute('href')
@@ -139,54 +124,57 @@ def get_story_links(driver, wait, config, log):
                             path_start_segment = company_regex.split('/')[1]; path_start = base_url.rsplit('/', 2)[0] + f'/{path_start_segment}/'
                             if full_url.startswith(path_start):
                                 if full_url not in links: links.add(full_url); found_on_page += 1
-                except Exception as link_err: log(f"    Error processing link element: {link_err}")
-            log(f"  Found {found_on_page} new unique links on page view.")
-            if not link_elements and current_page == 1: log(" Error: No links found on initial page. Exiting."); return []
+                except Exception as link_err: log_callback(f"    Error processing link element: {link_err}")
+            log_callback(f"  Found {found_on_page} new unique links on page view.")
+            if not link_elements and current_page == 1: log_callback(" Error: No links found on initial page. Exiting."); return []
 
             if current_page < max_pages_or_clicks:
                 if pagination_type == 'click_button_by_page_number' and next_page_selector_template:
                     next_page_num_str = str(current_page + 1); page_selector = next_page_selector_template.format(page_num=next_page_num_str)
-                    log(f"  Attempting pagination click for page {next_page_num_str}...")
-                    nav_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "nav.pagination, div[class*='pagination']"))) # Generic pagination container
+                    log_callback(f"  Attempting pagination click for page {next_page_num_str}...")
+                    
+                    # Scroll to pagination - find a common pagination container
+                    nav_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "nav, [class*='pagination']")))
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", nav_element); time.sleep(0.5)
-                    log(f"    Pagination container found and scrolled to.")
-                    page_button = WebDriverWait(nav_element, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, page_selector)))
-                    driver.execute_script("arguments[0].click();", page_button); log(f"  Clicked page {next_page_num_str} link.")
+                    log_callback(f"    Pagination container found and scrolled to.")
+                    
+                    page_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, page_selector)))
+                    driver.execute_script("arguments[0].click();", page_button); log_callback(f"  Clicked page {next_page_num_str} link.")
                     WebDriverWait(driver, 30).until(EC.visibility_of_element_located((By.CSS_SELECTOR, first_link_full_selector)))
                     WebDriverWait(driver, 10).until(lambda d: (d.find_element(By.CSS_SELECTOR, first_link_full_selector).get_attribute('data-href') or d.find_element(By.CSS_SELECTOR, first_link_full_selector).get_attribute('href')) != last_first_href)
-                    log(f"  Page {next_page_num_str} appears loaded."); time.sleep(3)
+                    log_callback(f"  Page {next_page_num_str} appears loaded."); time.sleep(3)
                 elif pagination_type == 'click_load_more' and next_page_selector_template:
-                     log(f"  Attempting 'Load More' (Click {current_page})...");
+                     log_callback(f"  Attempting 'Load More' (Click {current_page})...");
                      load_more_button = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.CSS_SELECTOR, next_page_selector_template)))
                      current_items_selector = f"{list_selector} {link_selector}"; initial_item_count = len(driver.find_elements(By.CSS_SELECTOR, current_items_selector))
-                     log(f"    Click {current_page}: Found button. Current items: {initial_item_count}. Clicking...")
+                     log_callback(f"    Click {current_page}: Found button. Current items: {initial_item_count}. Clicking...")
                      driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", load_more_button); time.sleep(0.5)
                      try: load_more_button.click()
-                     except ElementClickInterceptedException: log("      Std click intercepted, trying JS."); driver.execute_script("arguments[0].click();", load_more_button)
+                     except ElementClickInterceptedException: log_callback("      Std click intercepted, trying JS."); driver.execute_script("arguments[0].click();", load_more_button)
                      WebDriverWait(driver, 60).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, current_items_selector)) > initial_item_count);
                      new_item_count = len(driver.find_elements(By.CSS_SELECTOR, current_items_selector))
-                     log(f"    Load More Click {current_page}: Items increased to {new_item_count}."); time.sleep(1)
-                else: pagination_active = False; log("  Pagination finished or not configured.")
+                     log_callback(f"    Load More Click {current_page}: Items increased to {new_item_count}."); time.sleep(1)
+                else: pagination_active = False; log_callback("  Pagination finished or not configured.")
             if current_page >= max_pages_or_clicks: pagination_active = False
             current_page += 1
-        except (TimeoutException, NoSuchElementException) as e: log(f"  Error processing page {current_page}: Timeout/Element not found. {e}"); pagination_active = False; log("  Stopping pagination.")
-        except Exception as e: log(f"  Unexpected error processing page {current_page}: {e}"); pagination_active = False; log("  Stopping pagination.")
-    log(f"\nFound {len(links)} total unique story links.")
+        except (TimeoutException, NoSuchElementException) as e: log_callback(f"  Error processing page {current_page}: Timeout/Element not found. {e}"); pagination_active = False; log_callback("  Stopping pagination.")
+        except Exception as e: log_callback(f"  Unexpected error processing page {current_page}: {e}"); pagination_active = False; log_callback("  Stopping pagination.")
+    log_callback(f"\nFound {len(links)} total unique story links.")
     return list(links)
 
-def scrape_story_details(driver, wait, story_url, config, log):
+def scrape_story_details(driver, wait, story_url, config, log_callback):
     """ Step 2: Scrapes details based on config, calculates confidence. """
-    log(f"  Scraping: {story_url}"); load_timeout = config.get('details_page_load_timeout', 180)
+    log_callback(f"  Scraping: {story_url}"); load_timeout = config.get('details_page_load_timeout', 180)
     wait_selector = config.get('wait_for_element_selector', 'body'); data_selectors = config.get('data_selectors', {})
     conf_thresholds = config.get('confidence_thresholds', {"high": 7, "medium": 4})
     driver.set_page_load_timeout(load_timeout)
     try:
         driver.get(story_url); wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, wait_selector)))
-    except TimeoutException: log(f"    Page {story_url} timed out waiting for '{wait_selector}' and was skipped."); return None
-    except (WebDriverException, Exception) as e: log(f"    Error loading {story_url}: {e}"); return None
+    except TimeoutException: log_callback(f"    Page {story_url} timed out waiting for '{wait_selector}' and was skipped."); return None
+    except (WebDriverException, Exception) as e: log_callback(f"    Error loading {story_url}: {e}"); return None
     finally:
         try: driver.set_page_load_timeout(60) # Reset
-        except WebDriverException as e: log(f"    Warning: Could not reset page load timeout after {story_url}. Error: {e}")
+        except WebDriverException as e: log_callback(f"    Warning: Could not reset page load timeout after {story_url}. Error: {e}")
 
     soup = BeautifulSoup(driver.page_source, 'html.parser'); story_data = {'url': story_url}
     confidence_points = 0; title_element = None
@@ -194,15 +182,15 @@ def scrape_story_details(driver, wait, story_url, config, log):
         field_value, highest_confidence = None, 0
         if field == 'company_name' and selectors.get("source") == "url":
             try: match = re.search(selectors.get("regex", ""), story_url);
-            except Exception as e: log(f"    Error parsing company name: {e}")
+            except Exception as e: log_callback(f"    Error parsing company name: {e}")
             if match and match.group(1): name = match.group(1).replace('-', ' ').title(); field_value = name; highest_confidence = 2
             story_data[field] = field_value; confidence_points += highest_confidence; continue
-        if not isinstance(selectors, list): log(f"    Warning: Selectors for '{field}' not a list. Skipping."); continue
+        if not isinstance(selectors, list): log_callback(f"    Warning: Selectors for '{field}' not a list. Skipping."); continue
         for selector_config in selectors:
             selector, method_name = selector_config.get('selector'), selector_config.get('method')
             key_text, limit = selector_config.get('key_text'), selector_config.get('limit')
             min_length, confidence = selector_config.get('min_length', 0), selector_config.get('confidence', 0)
-            if not selector or not method_name: log(f"    Warning: Invalid selector config for {field}."); continue
+            if not selector or not method_name: log_callback(f"    Warning: Invalid selector config for {field}."); continue
             element, elements = None, []
             if selector == 'title_element': element = title_element;
             if selector == 'title_element' and not element: continue;
@@ -218,7 +206,7 @@ def scrape_story_details(driver, wait, story_url, config, log):
                     else: elements = soup.select(selector)
                     if not elements: continue
                     element = elements[0]
-                except Exception as e: log(f"    Error finding element '{selector}'/'{key_text}' for {field}: {e}"); continue
+                except Exception as e: log_callback(f"    Error finding element '{selector}'/'{key_text}' for {field}: {e}"); continue
             extraction_func = EXTRACTION_METHODS.get(method_name)
             if extraction_func:
                 try:
@@ -230,8 +218,8 @@ def scrape_story_details(driver, wait, story_url, config, log):
                         field_value = cleaned_value; highest_confidence = max(highest_confidence, confidence)
                         if field == 'title' and element: title_element = element
                         break
-                except Exception as e: log(f"    Error applying method '{method_name}' for {field}: {e}")
-            else: log(f"    Warning: Unknown method '{method_name}' for {field}.")
+                except Exception as e: log_callback(f"    Error applying method '{method_name}' for {field}: {e}")
+            else: log_callback(f"    Warning: Unknown method '{method_name}' for {field}.")
         story_data[field] = field_value
         if field_value: confidence_points += highest_confidence
     high_threshold, medium_threshold = conf_thresholds.get('high', 7), conf_thresholds.get('medium', 4)
@@ -290,7 +278,7 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
     all_stories_data = []
     try:
         status_callback("Finding links...")
-        story_urls = get_story_links(driver, wait, config, log_callback)
+        story_urls = get_story_links(driver, wait, config, log_callback) # Pass log_callback
 
         if story_urls:
             log_callback(f"\nStarting to scrape {len(story_urls)} individual story pages...")
@@ -313,7 +301,8 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
                          if 'STREAMLIT_SERVER_PORT' in os.environ: service = ChromeService(executable_path="/usr/bin/chromium-driver"); driver = webdriver.Chrome(service=service, options=options)
                          else: driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
                          wait = WebDriverWait(driver, wait_timeout); log_callback("Browser restarted.")
-                    data = scrape_story_details(driver, wait, url, config, log_callback)
+
+                    data = scrape_story_details(driver, wait, url, config, log_callback) # Pass log_callback
                     if data: all_stories_data.append(data)
                     else: failed_urls_this_pass.append(url)
                 urls_to_scrape = failed_urls_this_pass
@@ -347,26 +336,54 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
         except WebDriverException as e: log_callback(f"Browser already closed: {e}")
         except Exception as e: log_callback(f"Error closing browser: {e}")
 
+
 # --- Streamlit GUI ---
 st.set_page_config(layout="wide")
 st.title("🤖 Configurable Web Scraper")
 
 # --- NEW: Config Editor ---
 st.sidebar.title("Configuration")
-config_content = ""
-if os.path.exists(CONFIG_FILE):
-    with open(CONFIG_FILE, 'r') as f:
-        config_content = f.read()
+
+# Load config from file into session state ONCE
+if 'config_text' not in st.session_state:
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            st.session_state.config_text = f.read()
+    else:
+        # Provide a default empty template if no file
+        st.session_state.config_text = json.dumps({
+            "base_url": "https://www.example.com/stories/",
+            "max_pages_to_scrape": 1,
+            "pagination_type": "none",
+            "next_page_button_selector": "",
+            "story_card_list_selector": "body",
+            "story_card_link_selector": "a",
+            "wait_for_element_selector": "h1",
+            "details_page_load_timeout": 180,
+            "main_wait_timeout": 180,
+            "max_retries": 3,
+            "output_filename": "scraped_data.xlsx",
+            "data_selectors": {
+                "company_name": {"source": "url", "regex": "/stories/([^/]+)/?"},
+                "title": [{"selector": "h1", "method": "text", "confidence": 2}]
+            },
+            "confidence_thresholds": {"high": 2, "medium": 1},
+            "output_columns": ["url", "company_name", "title", "confidence_score", "needs_verification"]
+        }, indent=2)
 
 with st.sidebar.expander("Edit Configuration File (`config.json`)", expanded=False):
-    config_text = st.text_area("Config JSON", config_content, height=400, key="config_editor")
+    # The text editor's value is now controlled by session state
+    config_editor_text = st.text_area("Config JSON", st.session_state.config_text, height=400, key="config_editor_area")
+    
     if st.button("Save Configuration"):
         try:
             # Test if JSON is valid
-            json.loads(config_text)
+            json.loads(config_editor_text)
             # Save the file
             with open(CONFIG_FILE, 'w') as f:
-                f.write(config_text)
+                f.write(config_editor_text)
+            # Update session state
+            st.session_state.config_text = config_editor_text
             st.sidebar.success("Configuration saved successfully!")
             time.sleep(1) # Pause to show message
             st.rerun() # Rerun to reload config
@@ -377,13 +394,12 @@ with st.sidebar.expander("Edit Configuration File (`config.json`)", expanded=Fal
 
 # --- End Config Editor ---
 
-# Load config data for the app
+# Load config data for the app from session state
 try:
-    with open(CONFIG_FILE, 'r') as f:
-        config_data = json.load(f)
+    config_data = json.loads(st.session_state.config_text)
     st.sidebar.info(f"Loaded config for: **{config_data.get('base_url', 'N/A')}**")
-except Exception:
-    st.error(f"Error: Could not load `{CONFIG_FILE}`. Please check the file and save valid JSON in the editor.")
+except Exception as e:
+    st.error(f"Error: Could not load config from text. Please fix JSON in the editor. Error: {e}")
     st.stop()
 
 
@@ -403,10 +419,12 @@ with col1:
         st.session_state.download_filename = ""
     if 'log_buffer' not in st.session_state:
         st.session_state.log_buffer = ""
+    if 'status_message' not in st.session_state:
+        st.session_state.status_message = f"Status: Idle. Ready to scrape {config_data.get('base_url')}."
 
     start_button = st.button("🚀 Start Scraping", disabled=st.session_state.is_running, use_container_width=True)
     status_placeholder = st.empty()
-    status_placeholder.info(f"Status: Idle. Ready to scrape {config_data.get('base_url')}.")
+    status_placeholder.info(st.session_state.status_message) # Display current status
 
     if st.session_state.download_data:
         st.download_button(
@@ -419,46 +437,74 @@ with col1:
 
 with col2:
     st.header("Live Log")
+    # *** FIX: Define the log area ONCE using the session state buffer ***
     log_placeholder = st.empty()
-    # Restore log from session state
     log_placeholder.text_area("Log Output", st.session_state.log_buffer, height=400, key="log_output_main")
 
 # --- Callback Functions for the Thread ---
-def log_callback(message):
-    print(message) # Also print to console/terminal log
-    st.session_state.log_buffer += message + "\n"
-    log_placeholder.text_area("Log Output", st.session_state.log_buffer, height=400, key="log_output_main")
+# These functions will be called from the background thread
+@st.cache_data # Caching the logger object
+def get_logger(placeholder):
+    # This is a bit of a hack to pass the UI element to the thread
+    # A more robust way involves Streamlit Components or advanced state management
+    class StreamlitLog:
+        def __init__(self, placeholder_key):
+            self.placeholder_key = placeholder_key
+            if 'log_buffer' not in st.session_state:
+                 st.session_state.log_buffer = ""
+
+        def __call__(self, message):
+            print(message) # Log to console
+            st.session_state.log_buffer += message + "\n" # Update state
+        
+        def clear(self):
+            st.session_state.log_buffer = ""
+
+    return StreamlitLog("log_output_main")
+
+log_callback = get_logger(log_placeholder)
 
 def status_callback(message):
-    status_placeholder.info(f"Status: {message}")
+    st.session_state.status_message = f"Status: {message}"
 
 def finish_callback(success, message, data_buffer=None, filename=None):
     if success:
-        status_placeholder.success(f"Status: {message}")
+        st.session_state.status_message = f"Success: {message}"
         st.session_state.download_data = data_buffer
         st.session_state.download_filename = filename
     else:
-        status_placeholder.error(f"Status: {message}")
+        st.session_state.status_message = f"Error: {message}"
     st.session_state.is_running = False
-    # Use st.rerun() to update the button state and show download link
-    st.rerun()
+    # No rerun here, let the loop handle it
 
 # --- Start Button Logic ---
 if start_button and not st.session_state.is_running:
-    # Clear log and download state
     st.session_state.is_running = True
     st.session_state.download_data = None
     st.session_state.download_filename = ""
     st.session_state.log_buffer = "" # Clear log buffer
-    log_placeholder.text_area("Log Output", "", height=400, key="log_output_main") # Clear UI log
+    st.session_state.status_message = "Status: Starting scraper thread..."
     
-    # We must run the scraper in a thread so the GUI doesn't freeze
+    # Reload config from the editor state
+    try:
+        current_config_data = json.loads(st.session_state.config_text)
+    except Exception as e:
+        st.error(f"Cannot start: Invalid JSON in config editor. {e}")
+        st.session_state.is_running = False
+        st.stop()
+
     scraper_thread = threading.Thread(
         target=run_scraper_main,
-        args=(config_data, is_headless, log_callback, status_callback, finish_callback),
+        args=(current_config_data, is_headless, log_callback, status_callback, finish_callback),
         daemon=True
     )
     scraper_thread.start()
-    
-    # Rerun to update the button to "disabled" state
+    st.rerun() # Rerun to update button state and status
+
+# --- Auto-refresh loop for live log (while running) ---
+if st.session_state.is_running:
+    # Update the log placeholder with the current buffer
+    log_placeholder.text_area("Log Output", st.session_state.log_buffer, height=400, key="log_output_main")
+    status_placeholder.info(st.session_state.status_message)
+    time.sleep(2) # Refresh every 2 seconds
     st.rerun()
