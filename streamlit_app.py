@@ -10,18 +10,19 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException, ElementClickInterceptedException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 
 # ===============================
-# Thread-safe logging for Streamlit
+# Thread-safe logging
 # ===============================
 log_lock = threading.Lock()
 global_log_buffer = ""
 _builtin_print = print
 
 def log_callback(message):
+    """Collect logs for both console and Streamlit."""
     global global_log_buffer
     timestamp = time.strftime("[%H:%M:%S]")
     msg = f"{timestamp} {message}"
@@ -32,14 +33,14 @@ def log_callback(message):
 print = log_callback
 
 # ===============================
-# Constants and Config
+# Constants
 # ===============================
 BASE_URL = "https://www.seismic.com/customer-stories/"
 MAX_RETRIES = 3
 SECTION_KEYWORDS = {"challenge", "solution", "headquarters", "industry", "integrations", "share", "results"}
 
 # ===============================
-# Scraper logic (full Seismic version)
+# Scraper logic
 # ===============================
 def get_story_links(driver, wait, main_url):
     print(f"Navigating to {main_url} to find links...")
@@ -66,7 +67,7 @@ def get_story_links(driver, wait, main_url):
                 page_button_selector = f'a[data-page="{page_num}"]'
                 page_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, page_button_selector)))
                 driver.execute_script("arguments[0].click();", page_button)
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, f'a[data-page="{page_num}"][data-current="true"]')))
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, f'a[data-page=\"{page_num}\"][data-current=\"true\"]')))
                 wait.until_not(EC.text_to_be_present_in_element_attribute(
                     (By.CSS_SELECTOR, first_card_link_selector), "href", last_first_href
                 ))
@@ -74,7 +75,7 @@ def get_story_links(driver, wait, main_url):
             wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, first_card_link_selector)))
             last_first_href = driver.find_element(By.CSS_SELECTOR, first_card_link_selector).get_attribute('href')
 
-        except Exception as e:
+        except Exception:
             print(f"    Timed out or content not found on page {page_num}. Skipping.")
             continue
 
@@ -212,9 +213,6 @@ def scrape_story_details(driver, wait, story_url):
     return story_data
 
 
-# ===============================
-# Run scraper (hybrid driver + logging)
-# ===============================
 def run_scraper():
     print("🚀 Scraper starting...")
     driver = None
@@ -287,7 +285,7 @@ def run_scraper():
 
 
 # ===============================
-# Streamlit UI (Live Log + Auto-refresh)
+# Streamlit UI (Live Log + Auto-Refresh)
 # ===============================
 st.set_page_config(layout="wide")
 st.title("🕷️ Seismic Customer Stories Scraper")
@@ -304,23 +302,23 @@ if st.button("🚀 Start Scraping", use_container_width=True, disabled=st.sessio
     st.session_state.log_buffer = "[00:00:00] 🚀 Scraper starting...\n"
     st.session_state.scraper_running = True
     st.session_state.scraper_done = False
-
     t = threading.Thread(target=run_scraper, daemon=True)
     t.start()
-    st.experimental_rerun()
+    st.rerun()
 
-# --- Merge new logs into session buffer ---
+# --- Merge new logs ---
 with log_lock:
     if global_log_buffer:
         st.session_state.log_buffer += global_log_buffer
         global_log_buffer = ""
 
-# --- Show logs ---
+# --- Show logs (terminal-style) ---
 log_container = st.empty()
 log_container.markdown(
-    f"<pre style='white-space: pre-wrap; background:#111; color:#0f0; padding:10px; "
-    f"border-radius:8px; height:500px; overflow-y:scroll;'>{st.session_state.log_buffer}</pre>",
-    unsafe_allow_html=True
+    f"<pre style='white-space: pre-wrap; background:#111; color:#0f0; "
+    f"padding:10px; border-radius:8px; height:500px; overflow-y:scroll;'>"
+    f"{st.session_state.log_buffer}</pre>",
+    unsafe_allow_html=True,
 )
 
 # --- Detect thread state ---
@@ -329,7 +327,7 @@ threads_alive = any(th.is_alive() for th in threading.enumerate() if th.name != 
 if st.session_state.scraper_running and not threads_alive:
     st.session_state.scraper_running = False
     st.session_state.scraper_done = True
-    st.experimental_rerun()
+    st.rerun()
 
 # --- After scraper finishes ---
 output_file = "seismic_customer_stories_STREAMLIT.xlsx"
@@ -346,15 +344,11 @@ if st.session_state.scraper_done:
                 use_container_width=True,
             )
     else:
-        st.warning("⚠️ Scraper finished but no output file found.")
+        st.warning("⚠️ Scraper finished but output file not found.")
 else:
     # 🔁 Auto-refresh every 2 s while scraping
     if st.session_state.scraper_running:
-        import streamlit.runtime.scriptrunner as scriptrunner
-        import threading as th, time as tm
-        def _refresher():
-            tm.sleep(2)
-            scriptrunner.script_run_ctx.add_script_run_ctx(th.current_thread())
-            st.experimental_rerun()
-        threading.Thread(target=_refresher, daemon=True).start()
-
+        def _auto_refresh():
+            time.sleep(2)
+            st.rerun()
+        threading.Thread(target=_auto_refresh, daemon=True).start()
