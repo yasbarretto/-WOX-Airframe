@@ -334,28 +334,22 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
         except WebDriverException as e: log_callback(f"Browser already closed: {e}")
         except Exception as e: log_callback(f"Error closing browser: {e}")
 
-
 # --- Streamlit GUI Setup ---
 st.set_page_config(layout="wide")
 st.title("🤖 Configurable Web Scraper")
 
 # --- Initialize Session State ---
+# This block runs only once at the start of the session
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
-if 'download_data' not in st.session_state:
     st.session_state.download_data = None
-if 'download_filename' not in st.session_state:
     st.session_state.download_filename = ""
-if 'log_buffer' not in st.session_state:
     st.session_state.log_buffer = ""
-if 'status_message' not in st.session_state:
     st.session_state.status_message = "Status: Idle. Load config to begin."
-if 'config_text' not in st.session_state:
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
             st.session_state.config_text = f.read()
     else:
-        # Provide a default empty template
         st.session_state.config_text = json.dumps({ "base_url": "https://www.example.com" }, indent=2)
 
 # --- Callbacks to update session state ---
@@ -386,7 +380,6 @@ except Exception as e:
     st.sidebar.error(f"Invalid JSON in memory: {e}")
 
 with st.sidebar.expander("Edit Configuration File (`config.json`)", expanded=False):
-    # The text editor's value is controlled by session state
     config_editor_text = st.text_area("Config JSON", st.session_state.config_text, height=400, key="config_editor_area")
     
     if st.button("Save Configuration"):
@@ -405,20 +398,21 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     st.header("Controls")
-    is_headless = st.checkbox("Run in Headledss Mode (invisible browser)", value=True, help="Recommended for servers. Uncheck to watch the scraper work (local only).")
+    is_headless = st.checkbox("Run in Headless Mode (invisible browser)", value=True, help="Recommended for servers. Uncheck to watch the scraper work (local only).")
     
     start_button = st.button("🚀 Start Scraping", disabled=st.session_state.is_running, use_container_width=True)
     status_placeholder = st.empty()
+    
     # Display current status from session state
+    status_message = st.session_state.status_message
     if st.session_state.is_running:
-        status_placeholder.info(st.session_state.status_message)
-    elif "Success" in st.session_state.status_message:
-         status_placeholder.success(st.session_state.status_message)
-    elif "Error" in st.session_state.status_message:
-         status_placeholder.error(st.session_state.status_message)
+        status_placeholder.info(status_message)
+    elif "Success" in status_message:
+         status_placeholder.success(status_message)
+    elif "Error" in status_message:
+         status_placeholder.error(status_message)
     else:
-         status_placeholder.info(st.session_state.status_message)
-
+         status_placeholder.info(status_message)
 
     if st.session_state.download_data:
         st.download_button(
@@ -432,7 +426,7 @@ with col1:
 with col2:
     st.header("Live Log")
     # *** FIX: Draw the text area ONCE, reading from session state ***
-    log_placeholder = st.text_area("Log Output", st.session_state.log_buffer, height=400, key="log_output_main")
+    st.text_area("Log Output", st.session_state.log_buffer, height=400, key="log_output_main")
 
 
 # --- Start Button Logic ---
@@ -462,10 +456,11 @@ if start_button and not st.session_state.is_running:
 
 # --- Auto-refresh loop for live log (while running) ---
 if st.session_state.is_running:
-    # Update the status placeholder
-    status_placeholder.info(st.session_state.status_message)
-    # The log_placeholder.text_area(...) is already drawn above.
-    # We just need to trigger the rerun to make it refresh its value from session_state.
+    # This loop will run, updating the UI
+    
+    # --- *** FIX: REMOVED DUPLICATE WIDGET CALLS *** ---
+    # status_placeholder.info(st.session_state.status_message)
+    # The log_placeholder.text_area(...) is already drawn above in the 'with col2:' block
     
     # Schedule the next rerun to update the log
     time.sleep(2) # Refresh every 2 seconds
