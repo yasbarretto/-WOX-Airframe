@@ -398,18 +398,21 @@ def run_scraper():
 st.set_page_config(layout="wide")
 st.title("🕷️ Configurable Web Scraper")
 
+# Always initialize state before threads start
+if "log_buffer" not in st.session_state:
+    st.session_state.log_buffer = ""
+
 start = st.button("🚀 Start Scraping", use_container_width=True)
 
 if start:
-    # Start in a background thread so UI stays responsive
+    with log_lock:
+        st.session_state.log_buffer = "[00:00:00] 🚀 Scraper starting...\n"
     t = threading.Thread(target=run_scraper, daemon=True)
     t.start()
-    with log_lock:
-        st.session_state.log_buffer = "[00:00:00] Scraper started...\n"
 
-# Live log view
+# Live log viewer
 st.text_area("Live Log", st.session_state.log_buffer, height=500, key="log_output")
 
-# Auto-refresh UI every 2s while logs are updating
+# Auto-refresh UI every 2 seconds
 time.sleep(2)
 st.rerun()
