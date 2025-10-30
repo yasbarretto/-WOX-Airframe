@@ -287,7 +287,7 @@ def run_scraper():
 
 
 # ===============================
-# Streamlit UI (Live Log Stream)
+# Streamlit UI (Live Log + Auto-refresh)
 # ===============================
 st.set_page_config(layout="wide")
 st.title("🕷️ Seismic Customer Stories Scraper")
@@ -299,7 +299,7 @@ if "scraper_running" not in st.session_state:
 if "scraper_done" not in st.session_state:
     st.session_state.scraper_done = False
 
-# --- Start Scraper Button ---
+# --- Start button ---
 if st.button("🚀 Start Scraping", use_container_width=True, disabled=st.session_state.scraper_running):
     st.session_state.log_buffer = "[00:00:00] 🚀 Scraper starting...\n"
     st.session_state.scraper_running = True
@@ -307,28 +307,29 @@ if st.button("🚀 Start Scraping", use_container_width=True, disabled=st.sessio
 
     t = threading.Thread(target=run_scraper, daemon=True)
     t.start()
-    st.rerun()
+    st.experimental_rerun()
 
-# --- Update the logs ---
+# --- Merge new logs into session buffer ---
 with log_lock:
     if global_log_buffer:
         st.session_state.log_buffer += global_log_buffer
         global_log_buffer = ""
 
-# Live log placeholder (real-time)
+# --- Show logs ---
 log_container = st.empty()
 log_container.markdown(
-    f"<pre style='white-space: pre-wrap; background:#111; color:#0f0; padding:10px; border-radius:8px; height:500px; overflow-y:scroll;'>{st.session_state.log_buffer}</pre>",
+    f"<pre style='white-space: pre-wrap; background:#111; color:#0f0; padding:10px; "
+    f"border-radius:8px; height:500px; overflow-y:scroll;'>{st.session_state.log_buffer}</pre>",
     unsafe_allow_html=True
 )
 
-# --- Scraper state detection ---
-threads_alive = any(thread.is_alive() for thread in threading.enumerate() if thread.name != "MainThread")
+# --- Detect thread state ---
+threads_alive = any(th.is_alive() for th in threading.enumerate() if th.name != "MainThread")
 
 if st.session_state.scraper_running and not threads_alive:
     st.session_state.scraper_running = False
     st.session_state.scraper_done = True
-    st.rerun()
+    st.experimental_rerun()
 
 # --- After scraper finishes ---
 output_file = "seismic_customer_stories_STREAMLIT.xlsx"
@@ -345,9 +346,15 @@ if st.session_state.scraper_done:
                 use_container_width=True,
             )
     else:
-        st.warning("⚠️ Scraper finished but output file not found. Check logs above.")
+        st.warning("⚠️ Scraper finished but no output file found.")
 else:
+    # 🔁 Auto-refresh every 2 s while scraping
     if st.session_state.scraper_running:
-        time.sleep(2)
-        st.rerun()
+        import streamlit.runtime.scriptrunner as scriptrunner
+        import threading as th, time as tm
+        def _refresher():
+            tm.sleep(2)
+            scriptrunner.script_run_ctx.add_script_run_ctx(th.current_thread())
+            st.experimental_rerun()
+        threading.Thread(target=_refresher, daemon=True).start()
 
