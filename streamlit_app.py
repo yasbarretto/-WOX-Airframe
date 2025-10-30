@@ -321,6 +321,25 @@ while True:
 
     time.sleep(2)
 
+# --- After loop ends, show download button if file exists ---
+import os
+
+output_file = "seismic_customer_stories_STREAMLIT.xlsx"
+
+if os.path.exists(output_file):
+    with open(output_file, "rb") as f:
+        st.success("✅ Scraping complete! File saved successfully.")
+        st.download_button(
+            "📥 Download Excel Results",
+            f,
+            file_name=output_file,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+else:
+    st.warning("⚠️ No output file found yet. Please check logs for any errors.")
+
+
 # --- Download button once done ---
 if os.path.exists("seismic_customer_stories_STREAMLIT.xlsx"):
     with open("seismic_customer_stories_STREAMLIT.xlsx", "rb") as f:
