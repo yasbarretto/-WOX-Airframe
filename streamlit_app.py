@@ -307,10 +307,12 @@ log_placeholder = st.empty()
 
 # Continuously update logs in real time
 while True:
+    global global_log_buffer  # ✅ Declare before use
+
     with log_lock:
-        st.session_state.log_buffer += global_log_buffer
-        global global_log_buffer
-        global_log_buffer = ""
+        if global_log_buffer:
+            st.session_state.log_buffer += global_log_buffer
+            global_log_buffer = ""
 
     log_placeholder.text_area("Live Log", st.session_state.log_buffer, height=500)
 
