@@ -7,7 +7,7 @@ import re
 import json
 import os # To check for config file
 from io import BytesIO # To create download button for Excel
-import threading
+import threading # To run scraper in background
 
 # Selenium imports
 from selenium import webdriver
@@ -76,7 +76,6 @@ EXTRACTION_METHODS = {
     "text_after_strong_spacey_rte": get_text_after_strong_spacey_rte,
 }
 # --- End Scraper Helper Functions ---
-
 
 # --- Scraper Core Logic ---
 def get_story_links(driver, wait, config, log_callback):
@@ -336,72 +335,69 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
         except WebDriverException as e: log_callback(f"Browser already closed: {e}")
         except Exception as e: log_callback(f"Error closing browser: {e}")
 
-
 # --- Streamlit GUI ---
 st.set_page_config(layout="wide")
 st.title("🤖 Configurable Web Scraper")
 
-# --- NEW: Config Editor ---
-st.sidebar.title("Configuration")
-
-# Load config from file into session state ONCE
+# --- Initialize Session State ---
+if 'is_running' not in st.session_state:
+    st.session_state.is_running = False
+if 'download_data' not in st.session_state:
+    st.session_state.download_data = None
+if 'download_filename' not in st.session_state:
+    st.session_state.download_filename = ""
+if 'log_buffer' not in st.session_state:
+    st.session_state.log_buffer = ""
+if 'status_message' not in st.session_state:
+    st.session_state.status_message = "Status: Idle. Load config to begin."
 if 'config_text' not in st.session_state:
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
             st.session_state.config_text = f.read()
     else:
-        # Provide a default empty template if no file
-        st.session_state.config_text = json.dumps({
-            "base_url": "https://www.example.com/stories/",
-            "max_pages_to_scrape": 1,
-            "pagination_type": "none",
-            "next_page_button_selector": "",
-            "story_card_list_selector": "body",
-            "story_card_link_selector": "a",
-            "wait_for_element_selector": "h1",
-            "details_page_load_timeout": 180,
-            "main_wait_timeout": 180,
-            "max_retries": 3,
-            "output_filename": "scraped_data.xlsx",
-            "data_selectors": {
-                "company_name": {"source": "url", "regex": "/stories/([^/]+)/?"},
-                "title": [{"selector": "h1", "method": "text", "confidence": 2}]
-            },
-            "confidence_thresholds": {"high": 2, "medium": 1},
-            "output_columns": ["url", "company_name", "title", "confidence_score", "needs_verification"]
-        }, indent=2)
+        # Provide a default empty template
+        st.session_state.config_text = json.dumps({ "base_url": "https://www.example.com" }, indent=2)
+
+# --- NEW: Callbacks to update session state ---
+# These functions are safe to pass to the thread
+def log_callback(message):
+    print(message) # Log to console
+    st.session_state.log_buffer += message + "\n"
+
+def status_callback(message):
+    st.session_state.status_message = f"Status: {message}"
+
+def finish_callback(success, message, data_buffer=None, filename=None):
+    if success:
+        st.session_state.status_message = f"Success: {message}"
+        st.session_state.download_data = data_buffer
+        st.session_state.download_filename = filename
+    else:
+        st.session_state.status_message = f"Error: {message}"
+    st.session_state.is_running = False
+    # Don't call rerun() from the thread
+
+# --- Sidebar (Config Editor) ---
+st.sidebar.title("Configuration")
+try:
+    config_data_on_load = json.loads(st.session_state.config_text)
+    st.sidebar.info(f"Current Config: **{config_data_on_load.get('base_url', 'N/A')}**")
+except Exception as e:
+    st.sidebar.error(f"Invalid JSON in memory: {e}")
 
 with st.sidebar.expander("Edit Configuration File (`config.json`)", expanded=False):
-    # The text editor's value is now controlled by session state
     config_editor_text = st.text_area("Config JSON", st.session_state.config_text, height=400, key="config_editor_area")
     
     if st.button("Save Configuration"):
         try:
-            # Test if JSON is valid
-            json.loads(config_editor_text)
-            # Save the file
-            with open(CONFIG_FILE, 'w') as f:
-                f.write(config_editor_text)
-            # Update session state
-            st.session_state.config_text = config_editor_text
+            json.loads(config_editor_text) # Test if JSON is valid
+            with open(CONFIG_FILE, 'w') as f: f.write(config_editor_text) # Save
+            st.session_state.config_text = config_editor_text # Update state
             st.sidebar.success("Configuration saved successfully!")
-            time.sleep(1) # Pause to show message
-            st.rerun() # Rerun to reload config
-        except json.JSONDecodeError as e:
-            st.sidebar.error(f"Invalid JSON: {e}")
-        except Exception as e:
-            st.sidebar.error(f"Error saving file: {e}")
-
-# --- End Config Editor ---
-
-# Load config data for the app from session state
-try:
-    config_data = json.loads(st.session_state.config_text)
-    st.sidebar.info(f"Loaded config for: **{config_data.get('base_url', 'N/A')}**")
-except Exception as e:
-    st.error(f"Error: Could not load config from text. Please fix JSON in the editor. Error: {e}")
-    st.stop()
-
+            time.sleep(1)
+            st.rerun() # Rerun to reflect changes
+        except json.JSONDecodeError as e: st.sidebar.error(f"Invalid JSON: {e}")
+        except Exception as e: st.sidebar.error(f"Error saving file: {e}")
 
 # --- Main App Area ---
 col1, col2 = st.columns([1, 2])
@@ -410,18 +406,6 @@ with col1:
     st.header("Controls")
     is_headless = st.checkbox("Run in Headless Mode (invisible browser)", value=True, help="Recommended for servers. Uncheck to watch the scraper work (local only).")
     
-    # Initialize session state
-    if 'is_running' not in st.session_state:
-        st.session_state.is_running = False
-    if 'download_data' not in st.session_state:
-        st.session_state.download_data = None
-    if 'download_filename' not in st.session_state:
-        st.session_state.download_filename = ""
-    if 'log_buffer' not in st.session_state:
-        st.session_state.log_buffer = ""
-    if 'status_message' not in st.session_state:
-        st.session_state.status_message = f"Status: Idle. Ready to scrape {config_data.get('base_url')}."
-
     start_button = st.button("🚀 Start Scraping", disabled=st.session_state.is_running, use_container_width=True)
     status_placeholder = st.empty()
     status_placeholder.info(st.session_state.status_message) # Display current status
@@ -437,45 +421,9 @@ with col1:
 
 with col2:
     st.header("Live Log")
-    # *** FIX: Define the log area ONCE using the session state buffer ***
+    # *** FIX: Draw the text area ONCE, reading from session state ***
     log_placeholder = st.empty()
     log_placeholder.text_area("Log Output", st.session_state.log_buffer, height=400, key="log_output_main")
-
-# --- Callback Functions for the Thread ---
-# These functions will be called from the background thread
-@st.cache_data # Caching the logger object
-def get_logger(placeholder):
-    # This is a bit of a hack to pass the UI element to the thread
-    # A more robust way involves Streamlit Components or advanced state management
-    class StreamlitLog:
-        def __init__(self, placeholder_key):
-            self.placeholder_key = placeholder_key
-            if 'log_buffer' not in st.session_state:
-                 st.session_state.log_buffer = ""
-
-        def __call__(self, message):
-            print(message) # Log to console
-            st.session_state.log_buffer += message + "\n" # Update state
-        
-        def clear(self):
-            st.session_state.log_buffer = ""
-
-    return StreamlitLog("log_output_main")
-
-log_callback = get_logger(log_placeholder)
-
-def status_callback(message):
-    st.session_state.status_message = f"Status: {message}"
-
-def finish_callback(success, message, data_buffer=None, filename=None):
-    if success:
-        st.session_state.status_message = f"Success: {message}"
-        st.session_state.download_data = data_buffer
-        st.session_state.download_filename = filename
-    else:
-        st.session_state.status_message = f"Error: {message}"
-    st.session_state.is_running = False
-    # No rerun here, let the loop handle it
 
 # --- Start Button Logic ---
 if start_button and not st.session_state.is_running:
@@ -493,18 +441,23 @@ if start_button and not st.session_state.is_running:
         st.session_state.is_running = False
         st.stop()
 
+    # Run the scraper in a new thread
     scraper_thread = threading.Thread(
         target=run_scraper_main,
         args=(current_config_data, is_headless, log_callback, status_callback, finish_callback),
         daemon=True
     )
     scraper_thread.start()
-    st.rerun() # Rerun to update button state and status
+    st.rerun() # Rerun to update button state and start the auto-refresh loop
 
 # --- Auto-refresh loop for live log (while running) ---
 if st.session_state.is_running:
-    # Update the log placeholder with the current buffer
-    log_placeholder.text_area("Log Output", st.session_state.log_buffer, height=400, key="log_output_main")
+    # This loop will run, updating the UI
     status_placeholder.info(st.session_state.status_message)
+    log_placeholder.text_area("Log Output", st.session_state.log_buffer, height=400, key="log_output_main")
+    
+    # Check if the thread is still alive (optional but good practice)
+    # This requires storing the thread, which is complex with Streamlit's reruns.
+    # A simple time-based refresh is more stable here.
     time.sleep(2) # Refresh every 2 seconds
     st.rerun()
