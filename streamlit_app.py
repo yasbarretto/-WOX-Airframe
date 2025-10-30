@@ -287,66 +287,62 @@ def run_scraper():
 
 
 # ===============================
-# Streamlit UI
+# Streamlit UI (non-blocking)
 # ===============================
 st.set_page_config(layout="wide")
 st.title("🕷️ Seismic Customer Stories Scraper")
 
 if "log_buffer" not in st.session_state:
     st.session_state.log_buffer = ""
+if "scraper_running" not in st.session_state:
+    st.session_state.scraper_running = False
+if "scraper_done" not in st.session_state:
+    st.session_state.scraper_done = False
 
-# --- Run scraper in a background thread ---
-if st.button("🚀 Start Scraping", use_container_width=True):
-    with log_lock:
-        st.session_state.log_buffer = "[00:00:00] 🚀 Scraper starting...\n"
+# --- Start scraper ---
+if st.button("🚀 Start Scraping", use_container_width=True, disabled=st.session_state.scraper_running):
+    st.session_state.log_buffer = "[00:00:00] 🚀 Scraper starting...\n"
+    st.session_state.scraper_running = True
+    st.session_state.scraper_done = False
     t = threading.Thread(target=run_scraper, daemon=True)
     t.start()
+    st.rerun()
 
-# --- Live log viewer ---
-log_placeholder = st.empty()
+# --- Update logs ---
+with log_lock:
+    if global_log_buffer:
+        st.session_state.log_buffer += global_log_buffer
+        global_log_buffer = ""
 
-# Continuously update logs in real time
-while True:
-    with log_lock:
-        if global_log_buffer:
-            st.session_state.log_buffer += global_log_buffer
-            global_log_buffer = ""
+st.text_area("Live Log", st.session_state.log_buffer, height=500, key="live_log_area")
 
-    # Update live text output
-    log_placeholder.text(st.session_state.log_buffer)
+# --- Check scraper state ---
+threads_alive = any(thread.is_alive() for thread in threading.enumerate() if thread.name != "MainThread")
 
-    # Stop updating when scraper thread is finished
-    if not any(thread.is_alive() for thread in threading.enumerate() if thread.name != "MainThread"):
-        break
+if st.session_state.scraper_running and not threads_alive:
+    st.session_state.scraper_running = False
+    st.session_state.scraper_done = True
+    st.rerun()  # trigger one final refresh
 
-    time.sleep(2)
-
-# --- After loop ends, show download button if file exists ---
-import os
-
+# --- After scraper finishes ---
 output_file = "seismic_customer_stories_STREAMLIT.xlsx"
 
-if os.path.exists(output_file):
-    with open(output_file, "rb") as f:
-        st.success("✅ Scraping complete! File saved successfully.")
-        st.download_button(
-            "📥 Download Excel Results",
-            f,
-            file_name=output_file,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
+if st.session_state.scraper_done:
+    if os.path.exists(output_file):
+        with open(output_file, "rb") as f:
+            st.success("✅ Scraping complete! File saved successfully.")
+            st.download_button(
+                "📥 Download Excel Results",
+                f,
+                file_name=output_file,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+    else:
+        st.warning("⚠️ Scraper finished but output file not found. Check logs above.")
 else:
-    st.warning("⚠️ No output file found yet. Please check logs for any errors.")
+    # Auto-refresh every 2s if still scraping
+    if st.session_state.scraper_running:
+        time.sleep(2)
+        st.rerun()
 
-
-# --- Download button once done ---
-if os.path.exists("seismic_customer_stories_STREAMLIT.xlsx"):
-    with open("seismic_customer_stories_STREAMLIT.xlsx", "rb") as f:
-        st.download_button(
-            "📥 Download Excel Results",
-            f,
-            file_name="seismic_customer_stories_STREAMLIT.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
