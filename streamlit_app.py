@@ -19,12 +19,74 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 
-# --- Configuration Loading ---
-CONFIG_FILE = 'config.json'
+# --- Configuration (Hardcoded for Seismic) ---
+# This is based on your working script
+SEISMIC_CONFIG = {
+  "base_url": "https://www.seismic.com/customer-stories/",
+  "max_pages_to_scrape": 6,
+  "pagination_type": "click_button_by_page_number",
+  "next_page_button_selector": "a[data-page='{page_num}']",
+  "story_card_list_selector": "ul[class*='grid-cols-1']",
+  "story_card_link_selector": "li a",
+  "wait_for_element_selector": "h1, div.rte[class*='text-h3'], h2, div[class*='lg:col-span-5']",
+  "details_page_load_timeout": 180,
+  "main_wait_timeout": 180,
+  "max_retries": 3,
+  "output_filename": "seismic_customer_stories.xlsx",
+  "data_selectors": {
+    "company_name": {"source": "url", "regex": "/customer-stories/([^/]+)/?"},
+    "title": [
+      {"selector": "h1", "method": "text", "confidence": 2},
+      {"selector": "div.rte[class*='text-h3'] p", "method": "text", "confidence": 2},
+      {"selector": "div.rte[class*='text-h3']", "method": "text", "confidence": 2},
+      {"selector": "h2", "method": "text", "limit": 1, "min_length": 5, "confidence": 1},
+      {"selector": "p[class*='text-h']", "method": "text", "limit": 1, "min_length": 5, "confidence": 1}
+    ],
+    "description": [
+       {"selector": "title_element", "method": "next_p_after_title_strict", "min_length": 50, "confidence": 1}
+    ],
+    "challenge": [
+      {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "Challenge", "confidence": 1},
+      {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "Challenge", "confidence": 1},
+      {"selector": "strong", "method": "parent_text_after_strong", "key_text": "Challenge", "confidence": 1},
+      {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "Challenge", "confidence": 1}
+    ],
+    "solution": [
+        {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "Solution", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "Solution", "confidence": 1},
+        {"selector": "strong", "method": "parent_text_after_strong", "key_text": "Solution", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "Solution", "confidence": 1}
+    ],
+    "headquarters": [
+        {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "HEADQUARTERS", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "HEADQUARTERS", "confidence": 1},
+        {"selector": "strong", "method": "parent_text_after_strong", "key_text": "HEADQUARTERS", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "HEADQUARTERS", "confidence": 1}
+    ],
+    "industry": [
+        {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "INDUSTRY", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "INDUSTRY", "confidence": 1},
+        {"selector": "strong", "method": "parent_text_after_strong", "key_text": "INDUSTRY", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "INDUSTRY", "confidence": 1}
+    ],
+    "integrations": [
+        {"selector": "h3", "method": "text_after_key_h3_rte", "key_text": "INTEGRATIONS", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_in_separate_p", "key_text": "INTEGRATIONS", "confidence": 1},
+        {"selector": "strong", "method": "parent_text_after_strong", "key_text": "INTEGRATIONS", "confidence": 1},
+        {"selector": "strong", "method": "text_after_strong_spacey_rte", "key_text": "INTEGRATIONS", "confidence": 1}
+    ]
+  },
+  "confidence_thresholds": {
+      "high": 7,
+      "medium": 4
+  },
+  "output_columns": ["url", "company_name", "title", "description", "challenge", "solution", "headquarters", "industry", "integrations", "confidence_score", "needs_verification"]
+}
+# --- End Config ---
+
 SECTION_KEYWORDS = {"challenge", "solution", "headquarters", "industry", "integrations", "share", "results", "the", "about", "at", "group", "financial"}
 
 # --- Scraper Helper Functions ---
-# (These are the same functions from the working script)
 def clean_text(text):
     if not text: return None
     text = text.replace("(Opens in a new tab)", "").strip().strip('“”"\'')
@@ -132,8 +194,8 @@ def get_story_links(driver, wait, config, log_callback):
                     next_page_num_str = str(current_page + 1); page_selector = next_page_selector_template.format(page_num=next_page_num_str)
                     log_callback(f"  Attempting pagination click for page {next_page_num_str}...")
                     
-                    # Scroll to pagination - find a common pagination container
-                    nav_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "nav, [class*='pagination']")))
+                    # Scroll to pagination
+                    nav_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "nav, [class*='pagination']"))) # Use generic nav selector
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", nav_element); time.sleep(0.5)
                     log_callback(f"    Pagination container found and scrolled to.")
                     
@@ -242,7 +304,7 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
         options.set_capability("pageLoadStrategy", "eager")
         if is_headless:
             options.add_argument('--headless')
-            options.add_argument('--disable-gpu') # Often needed for headless
+            options.add_argument('--disable-gpu')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
@@ -335,11 +397,11 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
         except WebDriverException as e: log_callback(f"Browser already closed: {e}")
         except Exception as e: log_callback(f"Error closing browser: {e}")
 
-# --- Streamlit GUI ---
+# --- Streamlit GUI Setup ---
 st.set_page_config(layout="wide")
 st.title("🤖 Configurable Web Scraper")
 
-# --- Initialize Session State ---
+# Initialize session state
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
 if 'download_data' not in st.session_state:
@@ -358,7 +420,7 @@ if 'config_text' not in st.session_state:
         # Provide a default empty template
         st.session_state.config_text = json.dumps({ "base_url": "https://www.example.com" }, indent=2)
 
-# --- NEW: Callbacks to update session state ---
+# --- Callbacks to update session state ---
 # These functions are safe to pass to the thread
 def log_callback(message):
     print(message) # Log to console
@@ -375,7 +437,7 @@ def finish_callback(success, message, data_buffer=None, filename=None):
     else:
         st.session_state.status_message = f"Error: {message}"
     st.session_state.is_running = False
-    # Don't call rerun() from the thread
+    # Do NOT call rerun() from the thread
 
 # --- Sidebar (Config Editor) ---
 st.sidebar.title("Configuration")
@@ -386,6 +448,7 @@ except Exception as e:
     st.sidebar.error(f"Invalid JSON in memory: {e}")
 
 with st.sidebar.expander("Edit Configuration File (`config.json`)", expanded=False):
+    # The text editor's value is controlled by session state
     config_editor_text = st.text_area("Config JSON", st.session_state.config_text, height=400, key="config_editor_area")
     
     if st.button("Save Configuration"):
@@ -451,13 +514,12 @@ if start_button and not st.session_state.is_running:
     st.rerun() # Rerun to update button state and start the auto-refresh loop
 
 # --- Auto-refresh loop for live log (while running) ---
+# This part runs when st.rerun() is called and is_running is true
 if st.session_state.is_running:
-    # This loop will run, updating the UI
+    # Update the UI elements from session state
     status_placeholder.info(st.session_state.status_message)
     log_placeholder.text_area("Log Output", st.session_state.log_buffer, height=400, key="log_output_main")
     
-    # Check if the thread is still alive (optional but good practice)
-    # This requires storing the thread, which is complex with Streamlit's reruns.
-    # A simple time-based refresh is more stable here.
+    # Schedule the next rerun to update the log
     time.sleep(2) # Refresh every 2 seconds
     st.rerun()
