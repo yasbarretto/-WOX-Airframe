@@ -10,25 +10,23 @@ from io import BytesIO
 import threading
 import logging
 
-# --- Suppress harmless Streamlit thread warnings ---
+# --- Suppress Streamlit’s “missing ScriptRunContext” warnings ---
 logging.getLogger("streamlit.runtime.scriptrunner.script_runner").setLevel(logging.ERROR)
 
-# Selenium imports
+# --- Selenium imports ---
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException, ElementClickInterceptedException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 
 # -------------------------------------------------------------
-# --- Configuration and Session State Initialization ---
+# --- Streamlit Session Initialization ---
 # -------------------------------------------------------------
-CONFIG_FILE = 'config.json'
-SECTION_KEYWORDS = {"challenge", "solution", "headquarters", "industry", "integrations", "share", "results", "the", "about", "at", "group", "financial"}
-
+CONFIG_FILE = "config.json"
 defaults = {
     "is_running": False,
     "download_data": None,
@@ -36,21 +34,25 @@ defaults = {
     "log_buffer": "",
     "status_message": "Status: Idle. Load config to begin.",
 }
-for key, val in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-if 'config_text' not in st.session_state:
+if "config_text" not in st.session_state:
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
+        with open(CONFIG_FILE, "r") as f:
             st.session_state.config_text = f.read()
     else:
         st.session_state.config_text = json.dumps(
-            {"base_url": "https://www.example.com",
-             "max_pages_to_scrape": 1,
-             "main_wait_timeout": 30,
-             "details_page_load_timeout": 30},
-            indent=2
+            {
+                "base_url": "https://www.example.com",
+                "story_card_list_selector": "a",
+                "story_card_link_selector": "a",
+                "max_pages_to_scrape": 1,
+                "main_wait_timeout": 30,
+                "details_page_load_timeout": 30,
+            },
+            indent=2,
         )
 
 # -------------------------------------------------------------
@@ -68,7 +70,7 @@ def log_callback(message: str):
         log_messages.append(msg)
 
 def flush_logs_to_session_state():
-    """Safely move logs into Streamlit session state"""
+    """Safely move logs from thread to Streamlit UI"""
     global log_messages
     with log_lock:
         if log_messages:
@@ -76,72 +78,51 @@ def flush_logs_to_session_state():
             log_messages.clear()
 
 # -------------------------------------------------------------
-# --- Helper Functions ---
-# -------------------------------------------------------------
-def clean_text(text):
-    if not text:
-        return None
-    text = text.replace("(Opens in a new tab)", "").strip().strip('“”"\'')
-    return text.strip()
-
-def get_text(element):
-    return element.get_text(strip=True) if element else None
-
-# Minimal extraction helpers for stability
-EXTRACTION_METHODS = {"text": get_text}
-
-# -------------------------------------------------------------
-# --- Core Scraper Logic ---
+# --- Scraper Functions ---
 # -------------------------------------------------------------
 def get_story_links(driver, wait, config, log_callback):
-    base_url = config['base_url']
-    max_pages = config.get('max_pages_to_scrape', 1)
-    list_selector = config.get('story_card_list_selector', 'a')
-    link_selector = config.get('story_card_link_selector', 'a')
+    base_url = config.get("base_url")
+    list_selector = config.get("story_card_list_selector", "a")
+    link_selector = config.get("story_card_link_selector", "a")
+    max_pages = config.get("max_pages_to_scrape", 1)
 
-    log_callback(f"Navigating to {base_url} ...")
-    driver.get(base_url)
-    time.sleep(3)
-    links = set()
-
+    log_callback(f"🌐 Navigating to {base_url} ...")
     try:
+        driver.get(base_url)
         wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, list_selector)))
-        elements = driver.find_elements(By.CSS_SELECTOR, link_selector)
-        for e in elements:
-            href = e.get_attribute('href')
-            if href and href.startswith("http"):
-                links.add(href)
-        log_callback(f"✅ Found {len(links)} links on first page.")
     except Exception as e:
-        log_callback(f"⚠️ Error collecting links: {e}")
+        log_callback(f"⚠️ Could not load base URL: {e}")
         return []
 
-    if len(links) == 0:
-        log_callback("⚠️ No links found — check your selectors.")
+    links = set()
+    try:
+        link_elements = driver.find_elements(By.CSS_SELECTOR, link_selector)
+        for e in link_elements:
+            href = e.get_attribute("href")
+            if href and href.startswith("http"):
+                links.add(href)
+        log_callback(f"✅ Found {len(links)} links on main page.")
+    except Exception as e:
+        log_callback(f"⚠️ Error collecting links: {e}")
     return list(links)
 
-def scrape_story_details(driver, wait, story_url, config, log_callback):
-    log_callback(f"🔍 Scraping {story_url}")
-    wait_selector = config.get('wait_for_element_selector', 'body')
-    timeout = config.get('details_page_load_timeout', 30)
-
+def scrape_story_details(driver, wait, url, config, log_callback):
+    log_callback(f"🔍 Scraping {url}")
     try:
-        driver.set_page_load_timeout(timeout)
-        driver.get(story_url)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector)))
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        driver.set_page_load_timeout(config.get("details_page_load_timeout", 30))
+        driver.get(url)
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
+        soup = BeautifulSoup(driver.page_source, "html.parser")
         title = soup.title.string.strip() if soup.title else "(No title)"
-        return {"url": story_url, "title": title, "confidence_score": "High", "needs_verification": "No"}
+        return {"url": url, "title": title, "confidence_score": "High", "needs_verification": "No"}
     except Exception as e:
-        log_callback(f"⚠️ Failed to scrape {story_url}: {e}")
+        log_callback(f"⚠️ Failed to scrape {url}: {e}")
         return None
 
 def run_scraper_main(config, is_headless, log_callback, status_callback, finish_callback):
     driver = None
     try:
         log_callback("Step 1: Initializing Chrome driver ...")
-        status_callback("Starting Chrome ...")
-
         options = ChromeOptions()
         options.set_capability("pageLoadStrategy", "eager")
         if is_headless:
@@ -153,23 +134,26 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
 
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
         wait = WebDriverWait(driver, config.get("main_wait_timeout", 30))
+        log_callback("✅ Chrome driver initialized successfully.")
+        status_callback("Browser initialized.")
 
+        # Step 2: Collect links
         log_callback("Step 2: Collecting story links ...")
         urls = get_story_links(driver, wait, config, log_callback)
         if not urls:
-            finish_callback(False, "No links found.")
+            finish_callback(False, "No links found on the page.")
             return
+        log_callback(f"Step 3: Found {len(urls)} URLs to scrape ...")
 
-        log_callback(f"Step 3: Found {len(urls)} URLs. Beginning scrape ...")
         results = []
-        for i, url in enumerate(urls, 1):
+        for i, url in enumerate(urls, start=1):
             status_callback(f"Scraping {i}/{len(urls)}")
             data = scrape_story_details(driver, wait, url, config, log_callback)
             if data:
                 results.append(data)
 
         if not results:
-            finish_callback(False, "No data scraped.")
+            finish_callback(False, "No valid data scraped.")
             return
 
         df = pd.DataFrame(results)
@@ -191,7 +175,7 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
                 pass
 
 # -------------------------------------------------------------
-# --- Streamlit UI Setup ---
+# --- Streamlit UI ---
 # -------------------------------------------------------------
 st.set_page_config(layout="wide")
 st.title("🤖 Configurable Web Scraper (Debug Mode)")
@@ -212,7 +196,7 @@ def finish_callback(success, message, data_buffer=None, filename=None):
 st.sidebar.title("Configuration")
 try:
     cfg = json.loads(st.session_state.config_text)
-    st.sidebar.info(f"Current Config: **{cfg.get('base_url', 'N/A')}**")
+    st.sidebar.info(f"Current Config: [{cfg.get('base_url', 'N/A')}]({cfg.get('base_url', 'N/A')})")
 except Exception as e:
     st.sidebar.error(f"Invalid JSON: {e}")
 
@@ -230,14 +214,13 @@ with st.sidebar.expander("Edit Configuration", expanded=False):
         except Exception as e:
             st.sidebar.error(f"Invalid JSON: {e}")
 
-# --- Main Layout ---
+# --- Layout ---
 col1, col2 = st.columns([1, 2])
 with col1:
     st.header("Controls")
     is_headless = st.checkbox("Run in Headless Mode", value=True)
     start_button = st.button("🚀 Start Scraping", disabled=st.session_state.is_running, use_container_width=True)
     status_placeholder = st.empty()
-
     msg = st.session_state.status_message
     if "✅" in msg:
         status_placeholder.success(msg)
@@ -245,14 +228,13 @@ with col1:
         status_placeholder.error(msg)
     else:
         status_placeholder.info(msg)
-
     if st.session_state.download_data:
         st.download_button(
             label=f"⬇️ Download {st.session_state.download_filename}",
             data=st.session_state.download_data,
             file_name=st.session_state.download_filename,
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            use_container_width=True
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
         )
 
 with col2:
@@ -264,7 +246,7 @@ if start_button and not st.session_state.is_running:
     st.session_state.is_running = True
     st.session_state.download_data = None
     st.session_state.download_filename = ""
-    st.session_state.log_buffer = ""
+    st.session_state.log_buffer = "[00:00:00] 🚀 Scraper starting...\n"
     st.session_state.status_message = "Status: Starting scraper thread..."
 
     try:
@@ -274,16 +256,27 @@ if start_button and not st.session_state.is_running:
         st.session_state.is_running = False
         st.stop()
 
-    scraper_thread = threading.Thread(
-        target=run_scraper_main,
-        args=(cfg, is_headless, log_callback, status_callback, finish_callback),
-        daemon=True
-    )
-    scraper_thread.start()
+    try:
+        scraper_thread = threading.Thread(
+            target=run_scraper_main,
+            args=(cfg, is_headless, log_callback, status_callback, finish_callback),
+            daemon=True,
+        )
+        scraper_thread.start()
+        log_callback("🧠 Thread launched successfully.")
+    except Exception as e:
+        st.session_state.log_buffer += f"[ERROR] Failed to start thread: {e}\n"
+        st.session_state.is_running = False
+
+    # Force early flush and rerun so logs show instantly
+    time.sleep(1)
+    flush_logs_to_session_state()
     st.rerun()
 
 # --- Auto-refresh while running ---
 if st.session_state.is_running:
     flush_logs_to_session_state()
+    if not st.session_state.log_buffer.strip().endswith("..."):
+        st.session_state.log_buffer += "[Waiting for output...]\n"
     time.sleep(2)
     st.rerun()
