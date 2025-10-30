@@ -23,8 +23,30 @@ from selenium.webdriver.chrome.options import Options as ChromeOptions
 CONFIG_FILE = 'config.json'
 SECTION_KEYWORDS = {"challenge", "solution", "headquarters", "industry", "integrations", "share", "results", "the", "about", "at", "group", "financial"}
 
+
+# --- *** FIX: Initialize Session State at the TOP *** ---
+# This ensures these variables exist before any thread or function tries to access them
+if 'is_running' not in st.session_state:
+    st.session_state.is_running = False
+if 'download_data' not in st.session_state:
+    st.session_state.download_data = None
+if 'download_filename' not in st.session_state:
+    st.session_state.download_filename = ""
+if 'log_buffer' not in st.session_state:
+    st.session_state.log_buffer = ""
+if 'status_message' not in st.session_state:
+    st.session_state.status_message = "Status: Idle. Load config to begin."
+if 'config_text' not in st.session_state:
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            st.session_state.config_text = f.read()
+    else:
+        # Provide a default empty template
+        st.session_state.config_text = json.dumps({ "base_url": "https://www.example.com" }, indent=2)
+# --- *** END FIX *** ---
+
+
 # --- Scraper Helper Functions ---
-# (These are the same functions from the working script)
 def clean_text(text):
     if not text: return None
     text = text.replace("(Opens in a new tab)", "").strip().strip('“”"\'')
@@ -334,23 +356,10 @@ def run_scraper_main(config, is_headless, log_callback, status_callback, finish_
         except WebDriverException as e: log_callback(f"Browser already closed: {e}")
         except Exception as e: log_callback(f"Error closing browser: {e}")
 
+
 # --- Streamlit GUI Setup ---
 st.set_page_config(layout="wide")
 st.title("🤖 Configurable Web Scraper")
-
-# --- Initialize Session State ---
-# This block runs only once at the start of the session
-if 'is_running' not in st.session_state:
-    st.session_state.is_running = False
-    st.session_state.download_data = None
-    st.session_state.download_filename = ""
-    st.session_state.log_buffer = ""
-    st.session_state.status_message = "Status: Idle. Load config to begin."
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            st.session_state.config_text = f.read()
-    else:
-        st.session_state.config_text = json.dumps({ "base_url": "https://www.example.com" }, indent=2)
 
 # --- Callbacks to update session state ---
 # These functions are safe to pass to the thread
@@ -373,6 +382,14 @@ def finish_callback(success, message, data_buffer=None, filename=None):
 
 # --- Sidebar (Config Editor) ---
 st.sidebar.title("Configuration")
+# Load config from file into session state ONCE
+if 'config_text' not in st.session_state:
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            st.session_state.config_text = f.read()
+    else:
+        st.session_state.config_text = json.dumps({ "base_url": "https://www.example.com" }, indent=2)
+
 try:
     config_data_on_load = json.loads(st.session_state.config_text)
     st.sidebar.info(f"Current Config: **{config_data_on_load.get('base_url', 'N/A')}**")
@@ -400,6 +417,18 @@ with col1:
     st.header("Controls")
     is_headless = st.checkbox("Run in Headless Mode (invisible browser)", value=True, help="Recommended for servers. Uncheck to watch the scraper work (local only).")
     
+    # Initialize session state for widgets
+    if 'is_running' not in st.session_state:
+        st.session_state.is_running = False
+    if 'download_data' not in st.session_state:
+        st.session_state.download_data = None
+    if 'download_filename' not in st.session_state:
+        st.session_state.download_filename = ""
+    if 'log_buffer' not in st.session_state:
+        st.session_state.log_buffer = ""
+    if 'status_message' not in st.session_state:
+        st.session_state.status_message = "Status: Idle. Ready to scrape."
+
     start_button = st.button("🚀 Start Scraping", disabled=st.session_state.is_running, use_container_width=True)
     status_placeholder = st.empty()
     
@@ -459,7 +488,7 @@ if st.session_state.is_running:
     # This loop will run, updating the UI
     
     # --- *** FIX: REMOVED DUPLICATE WIDGET CALLS *** ---
-    # status_placeholder.info(st.session_state.status_message)
+    # status_placeholder.info(st.session_state.status_message) # Status is already drawn above
     # The log_placeholder.text_area(...) is already drawn above in the 'with col2:' block
     
     # Schedule the next rerun to update the log
