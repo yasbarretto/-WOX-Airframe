@@ -295,20 +295,32 @@ st.title("🕷️ Seismic Customer Stories Scraper")
 if "log_buffer" not in st.session_state:
     st.session_state.log_buffer = ""
 
+# --- Run scraper in a background thread ---
 if st.button("🚀 Start Scraping", use_container_width=True):
     with log_lock:
         st.session_state.log_buffer = "[00:00:00] 🚀 Scraper starting...\n"
     t = threading.Thread(target=run_scraper, daemon=True)
     t.start()
 
-# Merge logs from thread to Streamlit
-with log_lock:
-    if global_log_buffer:
+# --- Live log viewer ---
+log_placeholder = st.empty()
+
+# Continuously update logs in real time
+while True:
+    with log_lock:
         st.session_state.log_buffer += global_log_buffer
+        global global_log_buffer
         global_log_buffer = ""
 
-st.text_area("Live Log", st.session_state.log_buffer, height=500, key="log_output")
+    log_placeholder.text_area("Live Log", st.session_state.log_buffer, height=500)
 
+    # If scraper finished, break out of loop
+    if not any(thread.is_alive() for thread in threading.enumerate() if thread.name != "MainThread"):
+        break
+
+    time.sleep(2)  # Refresh every 2 seconds
+
+# --- Download button once done ---
 if os.path.exists("seismic_customer_stories_STREAMLIT.xlsx"):
     with open("seismic_customer_stories_STREAMLIT.xlsx", "rb") as f:
         st.download_button(
@@ -318,6 +330,3 @@ if os.path.exists("seismic_customer_stories_STREAMLIT.xlsx"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-
-time.sleep(2)
-st.rerun()
