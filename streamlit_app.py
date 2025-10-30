@@ -310,15 +310,16 @@ while True:
     with log_lock:
         if global_log_buffer:
             st.session_state.log_buffer += global_log_buffer
-            global_log_buffer = ""  # just reassign directly (no 'global' needed)
+            global_log_buffer = ""
 
-    log_placeholder.text_area("Live Log", st.session_state.log_buffer, height=500)
+    # Update live text output
+    log_placeholder.text(st.session_state.log_buffer)
 
     # Stop updating when scraper thread is finished
     if not any(thread.is_alive() for thread in threading.enumerate() if thread.name != "MainThread"):
         break
 
-    time.sleep(2)  # Refresh every 2 seconds
+    time.sleep(2)
 
 # --- Download button once done ---
 if os.path.exists("seismic_customer_stories_STREAMLIT.xlsx"):
