@@ -21,15 +21,18 @@ log_lock = threading.Lock()
 if "log_buffer" not in st.session_state:
     st.session_state.log_buffer = ""
 
+# Keep original print
+_builtin_print = print
+
 def log_callback(message):
     """Send logs to Streamlit UI and terminal."""
     timestamp = time.strftime("[%H:%M:%S]")
     msg = f"{timestamp} {message}"
-    print(msg)
+    _builtin_print(msg)  # use original print to console
     with log_lock:
         st.session_state.log_buffer += msg + "\n"
 
-# Redirect all prints to Streamlit
+# Redirect all prints to the Streamlit-safe version
 print = log_callback
 
 
